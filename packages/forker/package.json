@@ -1,0 +1,15 @@
+{
+  "name": "@forkoor/forker",
+  "version": "1.0.0",
+  "description": "Token Forker - Deploy safe forks using Token-2022 with Transfer Fee",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx watch src/index.ts",
+    "deploy": "tsx src/deploy.ts"
+  },
+  "dependencies": {
+    "@forkoor/core": "*"
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2022"],
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "outDir": "./dist",
+    "rootDir": ".",
+    "baseUrl": ".",
+    "paths": {
+      "@forkoor/core": ["packages/core/src"],
+      "@forkoor/scanner": ["packages/scanner/src"],
+      "@forkoor/forker": ["packages/forker/src"],
+      "@forkoor/treasury": ["packages/treasury/src"]
+    }
+  },
+  "include": ["packages/**/*", "scripts/**/*", "apps/**/*"],
+  "exclude": ["node_modules", "dist", "**/node_modules", "**/.next"]
+}

@@ -1,0 +1,15 @@
+{
+  "name": "@forkoor/scanner",
+  "version": "1.0.0",
+  "description": "Rug-Scanner (Sentinel) - Monitors and analyzes token launches for risks",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "@forkoor/core": "*"
+  }
+}

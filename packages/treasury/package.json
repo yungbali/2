@@ -1,0 +1,16 @@
+{
+  "name": "@forkoor/treasury",
+  "version": "1.0.0",
+  "description": "FORK-Vault Treasury - Automated fee collection and buyback system",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx watch src/index.ts",
+    "buyback": "tsx src/buyback.ts",
+    "start": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "@forkoor/core": "*"
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "name": "@forkoor/core",
+  "version": "1.0.0",
+  "description": "Core utilities and types for Claude Forkoor",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch"
+  }
+}
