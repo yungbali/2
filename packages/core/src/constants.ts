@@ -91,6 +91,12 @@ export const MAX_TOKEN_AGE_MS = 24 * 60 * 60 * 1000;
 /** Interval between treasury checks (1 hour) */
 export const TREASURY_CHECK_INTERVAL_MS = 60 * 60 * 1000;
 
+/** Minimum delay between RPC requests (ms) to avoid rate limits */
+export const RPC_REQUEST_DELAY_MS = 500;
+
+/** Maximum concurrent RPC requests */
+export const MAX_CONCURRENT_REQUESTS = 2;
+
 // ============================================
 // API Endpoints
 // ============================================

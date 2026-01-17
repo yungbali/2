@@ -1,0 +1,183 @@
+// Claude Forkoor - Database Schema
+// =================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================
+// Scanned Tokens
+// ============================================
+model ScannedToken {
+  id            String   @id @default(cuid())
+  mint          String   @unique
+  name          String
+  symbol        String
+  platform      String   @default("pump.fun")
+  
+  // Risk Assessment
+  riskScore     Int      // 0-100
+  riskLevel     String   // LOW, MEDIUM, HIGH, CRITICAL
+  forkable      Boolean  @default(false)
+  
+  // Risk Factors (JSON stored as string)
+  riskFactors   String   @default("[]") // JSON array
+  
+  // Metadata
+  imageUrl      String?
+  description   String?
+  
+  // Timestamps
+  scannedAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  
+  // Relations
+  safeFork      SafeFork?
+  
+  @@index([riskLevel])
+  @@index([forkable])
+  @@index([scannedAt])
+}
+
+// ============================================
+// Safe Forks (Deployed tokens)
+// ============================================
+model SafeFork {
+  id              String   @id @default(cuid())
+  mint            String   @unique
+  name            String
+  symbol          String
+  
+  // Original token reference
+  originalMint    String   @unique
+  originalToken   ScannedToken @relation(fields: [originalMint], references: [mint])
+  
+  // Deployment details
+  deployTx        String
+  revokeTx        String?
+  metadataTx      String?
+  
+  // Token config
+  decimals        Int      @default(9)
+  initialSupply   String   // BigInt as string
+  transferFeeBps  Int      @default(50) // 0.5%
+  
+  // Treasury
+  treasuryWallet  String
+  
+  // Security verification
+  mintRevoked     Boolean  @default(true)
+  freezeRevoked   Boolean  @default(true)
+  metadataLocked  Boolean  @default(true)
+  
+  // Stats (updated periodically)
+  holders         Int      @default(0)
+  volume24h       Float    @default(0)
+  price           Float    @default(0)
+  priceChange24h  Float    @default(0)
+  
+  // Timestamps
+  deployedAt      DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  // Relations
+  claims          MigrationClaim[]
+  
+  @@index([deployedAt])
+}
+
+// ============================================
+// Migration Claims (Victim Relief)
+// ============================================
+model MigrationClaim {
+  id              String   @id @default(cuid())
+  
+  // Claimant
+  walletAddress   String
+  
+  // Fork reference
+  safeForkMint    String
+  safeFork        SafeFork @relation(fields: [safeForkMint], references: [mint])
+  
+  // Original holdings
+  originalMint    String
+  originalBalance String   // BigInt as string
+  
+  // Allocation
+  allocation      String   // BigInt as string
+  
+  // Status
+  status          String   @default("PENDING") // PENDING, VERIFIED, CLAIMED, EXPIRED
+  
+  // Transaction
+  claimTx         String?
+  
+  // Timestamps
+  createdAt       DateTime @default(now())
+  claimedAt       DateTime?
+  expiresAt       DateTime
+  
+  @@unique([walletAddress, safeForkMint])
+  @@index([walletAddress])
+  @@index([status])
+}
+
+// ============================================
+// Treasury Transactions
+// ============================================
+model TreasuryTransaction {
+  id            String   @id @default(cuid())
+  
+  // Transaction type
+  type          String   // FEE_COLLECTED, BUYBACK, DISTRIBUTION
+  
+  // Amounts
+  amountSol     Float?
+  amountUsd     Float?
+  amountFork    Float?
+  
+  // Source/destination
+  fromMint      String?  // Source token (for fees)
+  toWallet      String?
+  
+  // Transaction
+  txSignature   String   @unique
+  
+  // Timestamps
+  timestamp     DateTime @default(now())
+  
+  @@index([type])
+  @@index([timestamp])
+}
+
+// ============================================
+// System Stats (Aggregated metrics)
+// ============================================
+model SystemStats {
+  id                  String   @id @default("singleton")
+  
+  // Scanner stats
+  tokensScanned       Int      @default(0)
+  criticalTokens      Int      @default(0)
+  
+  // Fork stats
+  totalForks          Int      @default(0)
+  totalHolders        Int      @default(0)
+  
+  // Treasury stats
+  totalFeesCollected  Float    @default(0)
+  totalBuybacks       Float    @default(0)
+  treasuryBalance     Float    @default(0)
+  
+  // Protection stats
+  victimsProtected    Int      @default(0)
+  valueProtectedUsd   Float    @default(0)
+  
+  // Timestamps
+  updatedAt           DateTime @updatedAt
+}

@@ -2,6 +2,7 @@
  * Token Monitor
  * ==============
  * Real-time monitoring of new token launches on Pump.fun and Raydium
+ * With rate limiting for public RPC endpoints
  */
 
 import { Connection, PublicKey, Logs, Context } from '@solana/web3.js';
@@ -26,7 +27,15 @@ interface MonitorEvents {
 
 const PUMPFUN_PROGRAM_ID = new PublicKey('6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P');
 const RAYDIUM_AMM_ID = new PublicKey('675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8');
-const RAYDIUM_CLMM_ID = new PublicKey('CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK');
+
+// ============================================
+// Rate Limiting Configuration
+// ============================================
+
+const RPC_REQUEST_DELAY_MS = 1000; // 1 second between requests for public RPC
+const MAX_QUEUE_SIZE = 10; // Max pending tokens to process
+const RETRY_DELAY_MS = 5000; // Wait 5s after rate limit
+const MAX_RETRIES = 3;
 
 // ============================================
 // Token Monitor
@@ -39,6 +48,9 @@ export class TokenMonitor extends EventEmitter<MonitorEvents> {
   private subscriptionId: number | null = null;
   private running: boolean = false;
   private processedMints: Set<string> = new Set();
+  private processingQueue: TokenLaunchEvent[] = [];
+  private isProcessing: boolean = false;
+  private lastRequestTime: number = 0;
 
   constructor(connection: Connection, pumpfunWsUrl: string | null = null) {
     super();
@@ -56,6 +68,7 @@ export class TokenMonitor extends EventEmitter<MonitorEvents> {
 
     this.running = true;
     logger.info('Starting token monitor...');
+    logger.warn('⚠️  Using public RPC - rate limits apply. For production, use Helius or QuickNode.');
 
     // Start pump.fun WebSocket if URL provided
     if (this.pumpfunWsUrl) {
@@ -67,6 +80,9 @@ export class TokenMonitor extends EventEmitter<MonitorEvents> {
     
     // Subscribe to pump.fun program logs (fallback)
     await this.subscribeToPumpfun();
+
+    // Start the processing loop
+    this.startProcessingLoop();
 
     logger.success('Token monitor started');
   }
@@ -83,11 +99,81 @@ export class TokenMonitor extends EventEmitter<MonitorEvents> {
     }
 
     if (this.subscriptionId !== null) {
-      await this.connection.removeOnLogsListener(this.subscriptionId);
+      try {
+        await this.connection.removeOnLogsListener(this.subscriptionId);
+      } catch (e) {
+        // Ignore errors during cleanup
+      }
       this.subscriptionId = null;
     }
 
     logger.info('Token monitor stopped');
+  }
+
+  /**
+   * Rate-limited RPC request wrapper
+   */
+  private async rateLimitedRequest<T>(fn: () => Promise<T>, retries = MAX_RETRIES): Promise<T | null> {
+    // Ensure minimum delay between requests
+    const now = Date.now();
+    const timeSinceLastRequest = now - this.lastRequestTime;
+    if (timeSinceLastRequest < RPC_REQUEST_DELAY_MS) {
+      await sleep(RPC_REQUEST_DELAY_MS - timeSinceLastRequest);
+    }
+    this.lastRequestTime = Date.now();
+
+    try {
+      return await fn();
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      
+      if (errorMessage.includes('429') || errorMessage.includes('Too Many Requests')) {
+        if (retries > 0) {
+          logger.warn(`Rate limited. Waiting ${RETRY_DELAY_MS / 1000}s before retry... (${retries} retries left)`);
+          await sleep(RETRY_DELAY_MS);
+          return this.rateLimitedRequest(fn, retries - 1);
+        }
+        logger.error('Max retries exceeded due to rate limiting');
+        return null;
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Start the processing loop for queued tokens
+   */
+  private startProcessingLoop(): void {
+    const processLoop = async () => {
+      while (this.running) {
+        if (this.processingQueue.length > 0 && !this.isProcessing) {
+          this.isProcessing = true;
+          const event = this.processingQueue.shift();
+          if (event) {
+            try {
+              this.emit('newToken', event);
+            } catch (error) {
+              logger.error('Error processing token:', error);
+            }
+          }
+          this.isProcessing = false;
+        }
+        await sleep(RPC_REQUEST_DELAY_MS);
+      }
+    };
+    processLoop();
+  }
+
+  /**
+   * Add token to processing queue
+   */
+  private queueToken(event: TokenLaunchEvent): void {
+    if (this.processingQueue.length >= MAX_QUEUE_SIZE) {
+      logger.warn('Processing queue full, dropping oldest token');
+      this.processingQueue.shift();
+    }
+    this.processingQueue.push(event);
+    logger.scan(`Queued token for processing: ${event.mint} (queue: ${this.processingQueue.length})`);
   }
 
   /**
@@ -114,7 +200,7 @@ export class TokenMonitor extends EventEmitter<MonitorEvents> {
         const message = JSON.parse(data.toString());
         
         if (message.type === 'newToken') {
-          await this.handleNewToken({
+          this.queueToken({
             mint: message.mint,
             name: message.name,
             symbol: message.symbol,
@@ -150,22 +236,26 @@ export class TokenMonitor extends EventEmitter<MonitorEvents> {
   private async subscribeToRaydium(): Promise<void> {
     logger.info('Subscribing to Raydium AMM...');
 
-    this.connection.onLogs(
-      RAYDIUM_AMM_ID,
-      async (logs: Logs, ctx: Context) => {
-        if (!this.running) return;
-        
-        // Look for pool initialization logs
-        const isPoolInit = logs.logs.some(
-          (log) => log.includes('initialize') || log.includes('Initialize')
-        );
+    try {
+      this.connection.onLogs(
+        RAYDIUM_AMM_ID,
+        async (logs: Logs, ctx: Context) => {
+          if (!this.running) return;
+          
+          // Look for pool initialization logs
+          const isPoolInit = logs.logs.some(
+            (log) => log.includes('initialize') || log.includes('Initialize')
+          );
 
-        if (isPoolInit) {
-          await this.processRaydiumLogs(logs, 'RAYDIUM');
-        }
-      },
-      'confirmed'
-    );
+          if (isPoolInit) {
+            await this.processRaydiumLogs(logs, 'RAYDIUM');
+          }
+        },
+        'confirmed'
+      );
+    } catch (error) {
+      logger.error('Failed to subscribe to Raydium:', error);
+    }
   }
 
   /**
@@ -174,22 +264,26 @@ export class TokenMonitor extends EventEmitter<MonitorEvents> {
   private async subscribeToPumpfun(): Promise<void> {
     logger.info('Subscribing to Pump.fun program...');
 
-    this.subscriptionId = this.connection.onLogs(
-      PUMPFUN_PROGRAM_ID,
-      async (logs: Logs, ctx: Context) => {
-        if (!this.running) return;
-        
-        // Look for token creation logs
-        const isCreate = logs.logs.some(
-          (log) => log.includes('create') || log.includes('Create')
-        );
+    try {
+      this.subscriptionId = this.connection.onLogs(
+        PUMPFUN_PROGRAM_ID,
+        async (logs: Logs, ctx: Context) => {
+          if (!this.running) return;
+          
+          // Look for token creation logs
+          const isCreate = logs.logs.some(
+            (log) => log.includes('create') || log.includes('Create')
+          );
 
-        if (isCreate) {
-          await this.processPumpfunLogs(logs);
-        }
-      },
-      'confirmed'
-    );
+          if (isCreate) {
+            await this.processPumpfunLogs(logs);
+          }
+        },
+        'confirmed'
+      );
+    } catch (error) {
+      logger.error('Failed to subscribe to Pump.fun:', error);
+    }
   }
 
   /**
@@ -201,11 +295,13 @@ export class TokenMonitor extends EventEmitter<MonitorEvents> {
       const signature = logs.signature;
       
       // Wait a bit for transaction to be finalized
-      await sleep(2000);
+      await sleep(3000);
       
-      const tx = await this.connection.getParsedTransaction(signature, {
-        maxSupportedTransactionVersion: 0,
-      });
+      const tx = await this.rateLimitedRequest(() => 
+        this.connection.getParsedTransaction(signature, {
+          maxSupportedTransactionVersion: 0,
+        })
+      );
 
       if (!tx) return;
 
@@ -220,10 +316,8 @@ export class TokenMonitor extends EventEmitter<MonitorEvents> {
             if (mint && !this.processedMints.has(mint)) {
               this.processedMints.add(mint);
               
-              // Get token metadata
-              await sleep(SCAN_DELAY_MS); // Wait for metadata to propagate
-              
-              await this.handleNewToken({
+              // Queue the token for processing
+              this.queueToken({
                 mint,
                 name: 'Unknown',
                 symbol: 'UNK',
@@ -248,11 +342,13 @@ export class TokenMonitor extends EventEmitter<MonitorEvents> {
     try {
       const signature = logs.signature;
       
-      await sleep(2000);
+      await sleep(3000);
       
-      const tx = await this.connection.getParsedTransaction(signature, {
-        maxSupportedTransactionVersion: 0,
-      });
+      const tx = await this.rateLimitedRequest(() =>
+        this.connection.getParsedTransaction(signature, {
+          maxSupportedTransactionVersion: 0,
+        })
+      );
 
       if (!tx) return;
 
@@ -268,13 +364,15 @@ export class TokenMonitor extends EventEmitter<MonitorEvents> {
         if (this.processedMints.has(pubkey)) continue;
         
         // Check if this is a mint account
-        const accountInfo = await this.connection.getAccountInfo(new PublicKey(pubkey));
+        const accountInfo = await this.rateLimitedRequest(() =>
+          this.connection.getAccountInfo(new PublicKey(pubkey))
+        );
         
         if (accountInfo && accountInfo.data.length === 82) {
           // This is likely a mint account
           this.processedMints.add(pubkey);
           
-          await this.handleNewToken({
+          this.queueToken({
             mint: pubkey,
             name: 'Unknown',
             symbol: 'UNK',
@@ -317,7 +415,7 @@ export class TokenMonitor extends EventEmitter<MonitorEvents> {
    * Manually trigger analysis of a token
    */
   async triggerAnalysis(mint: string): Promise<void> {
-    await this.handleNewToken({
+    this.queueToken({
       mint,
       name: 'Manual Check',
       symbol: 'MANUAL',
